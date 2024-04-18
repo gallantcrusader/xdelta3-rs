@@ -1,5 +1,8 @@
 use futures_io::*;
-use futures_util::io::*;
+// use futures_util::io::*;
+
+use std::io::{Read, Write};
+
 use std::ops::Range;
 
 use super::binding;
@@ -20,7 +23,7 @@ struct SrcBuffer<R> {
     buf: Box<[u8]>,
 }
 
-impl<R: AsyncRead + Unpin> SrcBuffer<R> {
+impl<R: AsyncRead + Unpin + Read> SrcBuffer<R> {
     async fn new(mut read: R) -> Option<Self> {
         let block_count = 64;
         let max_winsize = XD3_DEFAULT_SRCWINSZ;
@@ -33,7 +36,7 @@ impl<R: AsyncRead + Unpin> SrcBuffer<R> {
         let mut buf = Vec::with_capacity(max_winsize);
         buf.resize(max_winsize, 0u8);
 
-        let read_len = read.read(&mut buf).await.ok()?;
+        let read_len = read.read(&mut buf).ok()?;
         debug!("SrcBuffer::new read_len={}", read_len);
 
         Some(Self {
@@ -52,7 +55,7 @@ impl<R: AsyncRead + Unpin> SrcBuffer<R> {
         let idx = self.block_offset;
         let r = self.block_range(idx);
         let block = &mut self.buf[r.clone()];
-        let read_len = self.read.read(block).await.ok()?;
+        let read_len = self.read.read(block).ok()?;
         debug!(
             "range={:?}, block_len={}, read_len={}",
             r,
@@ -143,18 +146,18 @@ impl Drop for Xd3Stream {
 
 pub async fn decode_async<R1, R2, W>(input: R1, src: R2, out: W) -> Option<()>
 where
-    R1: AsyncRead + Unpin,
-    R2: AsyncRead + Unpin,
-    W: AsyncWrite + Unpin,
+    R1: AsyncRead + Unpin + Read,
+    R2: AsyncRead + Unpin + Read,
+    W: AsyncWrite + Unpin + Write,
 {
     process_async(Mode::Decode, input, src, out).await
 }
 
 pub async fn encode_async<R1, R2, W>(input: R1, src: R2, out: W) -> Option<()>
 where
-    R1: AsyncRead + Unpin,
-    R2: AsyncRead + Unpin,
-    W: AsyncWrite + Unpin,
+    R1: AsyncRead + Unpin + Read,
+    R2: AsyncRead + Unpin + Read,
+    W: AsyncWrite + Unpin + Write,
 {
     process_async(Mode::Encode, input, src, out).await
 }
@@ -166,9 +169,9 @@ enum Mode {
 
 async fn process_async<R1, R2, W>(mode: Mode, mut input: R1, src: R2, mut out: W) -> Option<()>
 where
-    R1: AsyncRead + Unpin,
-    R2: AsyncRead + Unpin,
-    W: AsyncWrite + Unpin,
+    R1: AsyncRead + Unpin + Read,
+    R2: AsyncRead + Unpin + Read,
+    W: AsyncWrite + Unpin + Write,
 {
     let mut stream = Xd3Stream::new();
     let stream = &mut stream.inner;
@@ -194,7 +197,7 @@ where
     let mut eof = false;
 
     'outer: while !eof {
-        let read_size = match input.read(&mut input_buf).await {
+        let read_size = match input.read(&mut input_buf) {
             Ok(n) => n,
             Err(_e) => {
                 debug!("error on read: {:?}", _e);
@@ -212,7 +215,7 @@ where
         stream.next_in = input_buf.as_ptr();
         stream.avail_in = read_size as u32;
 
-        'inner: loop {
+        loop {
             let ret: binding::xd3_rvalues = unsafe {
                 std::mem::transmute(match mode {
                     Mode::Encode => binding::xd3_encode_input(stream),
@@ -239,7 +242,7 @@ where
                         std::slice::from_raw_parts(stream.next_out, stream.avail_out as usize)
                     };
                     while !out_data.is_empty() {
-                        let n = match out.write(out_data).await {
+                        let n = match out.write(out_data) {
                             Ok(n) => n,
                             Err(_e) => {
                                 debug!("error on write: {:?}", _e);
@@ -266,5 +269,5 @@ where
         }
     }
 
-    out.flush().await.ok()
+    out.flush().ok()
 }
